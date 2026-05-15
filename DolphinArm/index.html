@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>海豚机械臂 - 机械零点版</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; background: #f0f4f8; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        .container { max-width: 550px; width: 100%; background: white; border-radius: 32px; padding: 24px 20px 32px; box-shadow: 0 8px 20px rgba(0,0,0,0.1); text-align: center; }
+        h1 { font-size: 1.8rem; color: #1e2f5e; margin: 0 0 0.5rem; }
+        .sub { color: #5a6e8a; margin-bottom: 1.5rem; font-size: 0.9rem; }
+        .slider-group { margin: 20px 0; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+        .slider-group label { font-weight: 600; width: 70px; text-align: left; color: #1f3a6b; }
+        input[type="range"] { flex: 2; min-width: 180px; height: 6px; border-radius: 10px; background: #d0ddeb; -webkit-appearance: none; appearance: none; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; background: #2c7da0; border-radius: 50%; cursor: pointer; border: 2px solid white; }
+        .value { width: 52px; background: #eef2f7; border-radius: 30px; padding: 4px 0; font-weight: bold; color: #0059b3; }
+        button { background: #2c7da0; border: none; color: white; font-size: 1rem; font-weight: 600; padding: 10px 24px; border-radius: 40px; margin: 12px 8px 0; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #1f5e7a; transform: scale(0.97); }
+        .status { margin-top: 20px; font-size: 0.8rem; color: #2c7da0; background: #e9f0f5; padding: 8px; border-radius: 28px; word-break: break-word; }
+        .btn-zero { background: #5a6e8a; }
+        .btn-zero:hover { background: #3e526e; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🐬 海豚机械臂</h1>
+    <div class="sub">机械零点已标定 | 纯手动控制</div>
+
+    <div class="slider-group"><label>基座(A)</label><input type="range" id="jointA" min="0" max="180" value="90" step="1"><span class="value" id="valA">90</span></div>
+    <div class="slider-group"><label>肩(B)</label><input type="range" id="jointB" min="0" max="180" value="0" step="1"><span class="value" id="valB">0</span></div>
+    <div class="slider-group"><label>肘(C)</label><input type="range" id="jointC" min="0" max="180" value="180" step="1"><span class="value" id="valC">180</span></div>
+    <div class="slider-group"><label>夹爪(G)</label><input type="range" id="jointG" min="0" max="180" value="0" step="1"><span class="value" id="valG">0</span></div>
+    <div class="slider-group"><label>运动速度</label><input type="range" id="speed" min="0" max="100" value="70" step="1"><span class="value" id="speedVal">70</span></div>
+
+    <div><button id="zeroBtn" class="btn-zero">🔄 归零 (机械零点)</button></div>
+
+    <div class="status" id="statusMsg">⚡ 等待连接 ESP32...</div>
+</div>
+
+<script>
+    const ESP32_IP = "192.168.4.1";
+    const BASE_URL = `http://${ESP32_IP}`;
+
+    const sliders = {
+        A: document.getElementById('jointA'),
+        B: document.getElementById('jointB'),
+        C: document.getElementById('jointC'),
+        G: document.getElementById('jointG')
+    };
+    const spans = {
+        A: document.getElementById('valA'),
+        B: document.getElementById('valB'),
+        C: document.getElementById('valC'),
+        G: document.getElementById('valG')
+    };
+    const speedSlider = document.getElementById('speed');
+    const speedSpan = document.getElementById('speedVal');
+    const zeroBtn = document.getElementById('zeroBtn');
+    const statusDiv = document.getElementById('statusMsg');
+
+    const nameToId = {A:1, B:2, C:3, G:4};
+
+    async function sendAngle(axisName, angle) {
+        const servoId = nameToId[axisName];
+        try {
+            const url = `${BASE_URL}/set?servo=${servoId}&angle=${angle}`;
+            const resp = await fetch(url, { method: 'GET', cache: 'no-cache' });
+            if (resp.ok) {
+                statusDiv.innerText = `✅ ${axisName}轴 → ${angle}°`;
+                setTimeout(() => {
+                    if (statusDiv.innerText.includes(axisName)) 
+                        statusDiv.innerText = "📡 在线，等待指令";
+                }, 800);
+            } else {
+                console.warn(`${axisName}轴 HTTP ${resp.status}`);
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    }
+
+    async function sendSpeed(percent) {
+        try {
+            await fetch(`${BASE_URL}/speed?val=${percent}`, { method: 'GET', cache: 'no-cache' });
+        } catch (err) {}
+    }
+
+    async function zeroAll() {
+        const zeroPos = {A:90, B:0, C:180, G:0};
+        for (let axis of ['A','B','C','G']) {
+            sliders[axis].value = zeroPos[axis];
+            spans[axis].innerText = zeroPos[axis];
+            sendAngle(axis, zeroPos[axis]);
+        }
+        try {
+            const resp = await fetch(`${BASE_URL}/zero`, { method: 'GET', cache: 'no-cache' });
+            if (resp.ok) {
+                statusDiv.innerText = "🔄 已归零至机械零点 (A90 B0 C180 G0)";
+            } else {
+                statusDiv.innerText = "🔄 归零指令已发送";
+            }
+        } catch (err) {
+            statusDiv.innerText = "⚠️ 归零请求失败，但滑块已复位";
+        }
+    }
+
+    for (let axis of ['A','B','C','G']) {
+        const slider = sliders[axis];
+        const span = spans[axis];
+        slider.addEventListener('input', (e) => {
+            const val = e.target.value;
+            span.innerText = val;
+            sendAngle(axis, val);
+        });
+    }
+
+    speedSlider.addEventListener('input', (e) => {
+        const val = e.target.value;
+        speedSpan.innerText = val;
+        sendSpeed(val);
+    });
+
+    zeroBtn.addEventListener('click', zeroAll);
+
+    async function checkConnection() {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 1500);
+            const resp = await fetch(`${BASE_URL}/`, { method: 'HEAD', signal: controller.signal });
+            clearTimeout(timeoutId);
+            if (resp.ok) {
+                statusDiv.innerText = "🟢 已连接 ESP32，拖动滑块即可控制";
+            } else {
+                statusDiv.innerText = "⚠️ 连接异常，请确保已连接 DolphinArm 热点";
+            }
+        } catch (err) {
+            statusDiv.innerText = "🔌 未检测到 ESP32，请连接热点 192.168.4.1";
+        }
+    }
+    checkConnection();
+</script>
+</body>
+</html>
