@@ -51,15 +51,25 @@ try:
 except:
     pass
 
+last_send_time = {1: 0, 2: 0, 3: 0, 4: 0}
+MIN_SEND_INTERVAL = 0.05   # 50 毫秒最小间隔
 def send_servo(servo_id, angle):
-    """发送舵机角度（0~180）"""
+    #发送舵机角度0~180,带频率限制
+    global last_send_time
+    # 频率限制：同一舵机在 MIN_SEND_INTERVAL 秒内不重复发送
+    now = time.time()
+    if now - last_send_time.get(servo_id, 0) < MIN_SEND_INTERVAL:
+        return   # 忽略过于频繁的请求
+    # 量化为 QUANTIZE_STEP 的倍数（如果已经定义了 QUANTIZE_STEP）
+    angle = round(angle / QUANTIZE_STEP) * QUANTIZE_STEP
     angle = max(0, min(180, int(angle)))
     try:
         url = f"http://{ESP32_IP}/setGesture?servo={servo_id}&angle={angle}"
         requests.get(url, timeout=0.05)
+        last_send_time[servo_id] = now
     except:
         pass
-    time.sleep(0.002)   # 极短延迟，避免 ESP32 来不及处理
+    time.sleep(0.002)
 
 # ---------- 摄像头初始化 ----------
 cap = cv2.VideoCapture(0)
@@ -77,7 +87,7 @@ AXIS_LOCK_FRAMES = 4            # 锁轴后保持的帧数，越大越稳定但�
 MOVE_DEAD_ZONE = 0.01          # 忽略小于此值的移动（归一化坐标）
 
 # ---------- 可调参数（平滑） ----------
-SMOOTH_ALPHA = 0.15             # 指数移动平均系数，越小越平滑但延迟大
+SMOOTH_ALPHA = 0.25             # 指数移动平均系数，越小越平滑但延迟大
 
 # ---------- 可调参数（舵机更新阈值） ----------
 SERVO_UPDATE_THRESHOLD = 1      # 角度变化小于此值不发送指令，减少抖动
@@ -87,13 +97,15 @@ PINCH_ENTER = 0.32              # 进入捏合模式的 pinch_ratio 上限（越
 PINCH_EXIT = 0.42               # 退出捏合模式的 pinch_ratio 下限（越大越难退出）
 POINT_MIN_RATIO = 0.50          # 进入 Point 模式的最小 pinch_ratio，防止误判
 
+QUANTIZE_STEP = 5                    # 角度取整步长
+SERVO_UPDATE_THRESHOLD = 4           # 改为 4°，减少指令数
 # ---------- 机械安全限位 ----------
 A_MIN = 20
 A_MAX = 160
 B_MIN = 0
 B_MAX = 110
 G_MIN = 0
-G_MAX = 150
+G_MAX = 90
 
 # ---------- 全局状态变量 ----------
 robot_state = {
@@ -121,7 +133,7 @@ interrupt_count = 0             # 手势中断计数，用于迟滞退出
 last_open_palm_time = 0         # 归零冷却
 last_fist_time = 0              # 抓取冷却
 
-ab_locked = False               # A/B 轴锁定状态（点赞切换）
+ab_locked = False               # A/B 轴锁定状态（比✌️切换）
 current_mode = "TELEOP"
 last_lock_time = 0
 lock_message = ""
@@ -159,6 +171,22 @@ def cleanup():
 def handle_exit(sig, frame):
     global running
     running = False
+
+# ---------- 网页角度信息同步 ----------
+def sync_angles():
+    try:
+        resp = requests.get(f"http://{ESP32_IP}/status", timeout=0.2)
+        if resp.status_code == 200:
+            data = resp.json()
+            global current_base_angle, current_shoulder_angle, smooth_grip
+            current_base_angle = data["A"]
+            current_shoulder_angle = data["B"]
+            smooth_grip = data["G"]
+            robot_state["A"] = data["A"]
+            robot_state["B"] = data["B"]
+            robot_state["G"] = data["G"]
+    except:
+        pass
 
 signal.signal(signal.SIGINT, handle_exit)
 signal.signal(signal.SIGTERM, handle_exit)
@@ -246,6 +274,8 @@ def draw_ui(frame):
     cv2.line(frame, (0,cy), (w,cy), line_color, 1)
     dz = CENTER_DEAD_ZONE
     cv2.rectangle(frame, (cx-dz, cy-dz), (cx+dz, cy+dz), (160,160,160), 1)
+
+sync_angles() 
 
 # ---------- 主循环 ----------
 try:
@@ -379,10 +409,17 @@ try:
 
                 # A 轴（底座）：手指水平偏移转换成速度累加
                 if control_axis == "A":
-                    offset_x = px - 0.5
-                    if abs(offset_x) < 0.05:
-                        offset_x = 0
-                    speed = offset_x * 28          # 【可调参数】速度系数 28
+                    if control_axis == "A":
+                        EDGE_THRESH = 0.12   # 边缘锁死区宽度（可调参数）
+                        if px > 1.0 - EDGE_THRESH:          # 手指在右边缘
+                            speed = 28 * 0.5                 # 恒定正向最大速度（系数28可调）
+                        elif px < EDGE_THRESH:               # 手指在左边缘
+                            speed = -28 * 0.5                # 恒定负向最大速度
+                        else:
+                            offset_x = px - 0.5
+                            if abs(offset_x) < 0.05:
+                                offset_x = 0
+                            speed = offset_x * 28
                     current_base_angle += speed
                     current_base_angle = clamp(current_base_angle, A_MIN, A_MAX)
                     smooth_base = lerp(smooth_base, current_base_angle, 0.2)
@@ -422,7 +459,7 @@ try:
             # ---------- Pinch 模式：捏合控制夹爪 ----------
             elif active_gesture == "pinch":
                 pinch_ratio = get_pinch_ratio(hand_lms)
-                grip_angle = int((pinch_ratio - 0.12) * 420)   # 【可调参数】映射系数 420，偏移 -0.12
+                grip_angle = int((pinch_ratio - 0.12) * 260)   # 【可调参数】映射系数 260，偏移 -0.12
                 grip_angle = clamp(grip_angle, G_MIN, G_MAX)
                 smooth_grip = lerp(smooth_grip, grip_angle, 0.20)
                 smooth_grip_int = int(smooth_grip)

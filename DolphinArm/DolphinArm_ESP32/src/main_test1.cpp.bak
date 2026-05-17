@@ -1,0 +1,94 @@
+#include <ESP32Servo.h>
+
+// ---------- 引脚定义 ----------
+#define SERVO_A_PIN 13   // 底座 A 轴
+#define SERVO_B_PIN 14   // 肩   B 轴
+#define SERVO_C_PIN 27   // 肘   C 轴
+#define SERVO_G_PIN 26   // 夹爪 G 轴
+
+Servo servoA, servoB, servoC, servoG;
+
+// 默认安全角度（初始化时用，避免卡住）
+const int SAFE_ANGLE = 90;
+
+void setup() {
+    Serial.begin(115200);
+    
+    // 分配舵机
+    servoA.attach(SERVO_A_PIN);
+    servoB.attach(SERVO_B_PIN);
+    servoC.attach(SERVO_C_PIN);
+    servoG.attach(SERVO_G_PIN);
+    
+    // 所有舵机先转到安全角度
+    servoA.write(SAFE_ANGLE);
+    servoB.write(SAFE_ANGLE);
+    servoC.write(SAFE_ANGLE);
+    servoG.write(SAFE_ANGLE);
+    
+    Serial.println("舵机测试就绪。");
+    Serial.println("命令格式：");
+    Serial.println("  设置舵机：s <编号> <角度>  例如：s 2 45");
+    Serial.println("  全部归零：zero");
+    Serial.println("  编号：1=A轴 2=B轴 3=C轴 4=G轴");
+    Serial.println("  角度范围：0 ~ 180");
+}
+
+void loop() {
+    if (Serial.available()) {
+        String input = Serial.readStringUntil('\n');
+        input.trim();
+        input.toLowerCase();
+        
+        if (input.length() == 0) return;
+        
+        // 解析命令
+        int firstSpace = input.indexOf(' ');
+        String cmd = (firstSpace > 0) ? input.substring(0, firstSpace) : input;
+        
+        if (cmd == "zero" || cmd == "z") {
+            // 全部归零到 90°（安全中间位置）
+            servoA.write(SAFE_ANGLE);
+            servoB.write(SAFE_ANGLE);
+            servoC.write(SAFE_ANGLE);
+            servoG.write(SAFE_ANGLE);
+            Serial.println("所有舵机归零到 90°");
+        }
+        else if (cmd == "s" || cmd == "servo") {
+            // 解析参数
+            String args = input.substring(firstSpace + 1);
+            int secondSpace = args.indexOf(' ');
+            if (secondSpace > 0) {
+                int id = args.substring(0, secondSpace).toInt();
+                int angle = args.substring(secondSpace + 1).toInt();
+                
+                // 限制角度在 0-180 内
+                angle = constrain(angle, 0, 180);
+                
+                Servo* currentServo = nullptr;
+                String servoName = "";
+                switch(id) {
+                    case 1: currentServo = &servoA; servoName = "A轴(底座)"; break;
+                    case 2: currentServo = &servoB; servoName = "B轴(肩)"; break;
+                    case 3: currentServo = &servoC; servoName = "C轴(肘)"; break;
+                    case 4: currentServo = &servoG; servoName = "G轴(夹爪)"; break;
+                    default:
+                        Serial.println("错误：编号必须为 1-4");
+                        return;
+                }
+                
+                currentServo->write(angle);
+                Serial.print("设置 ");
+                Serial.print(servoName);
+                Serial.print(" 到 ");
+                Serial.print(angle);
+                Serial.println("°");
+            } else {
+                Serial.println("格式错误。正确格式：s <编号> <角度>");
+            }
+        }
+        else {
+            Serial.println("未知命令。可用命令：s 或 zero");
+        }
+    }
+}
